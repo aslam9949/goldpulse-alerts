@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.env
+*.db
+*.db-journal
+*.log
+*.log.*
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+.eggs/
+*.egg
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Data and logs
+data/
+logs/
+*.db-journal
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/

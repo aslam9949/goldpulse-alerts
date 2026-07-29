@@ -1,0 +1,24 @@
+# Telegram Bot
+aiogram==3.13.1
+
+# RSS Parsing
+feedparser==6.0.11
+
+# HTTP
+aiohttp==3.10.5
+requests==2.32.3
+
+# Gold Price
+yfinance==0.2.43
+
+# Scheduling
+APScheduler==3.10.4
+
+# Environment
+python-dotenv==1.0.1
+
+# Timezone
+pytz==2024.2
+
+# Fuzzy matching for dedup
+rapidfuzz==3.10.0

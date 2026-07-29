@@ -1,0 +1,23 @@
+# ── GoldPulse Alerts — Docker Compose ────────────────────────
+# Run with: docker compose up -d
+# View logs: docker compose logs -f
+# Stop: docker compose down
+
+services:
+  goldpulse:
+    build: .
+    container_name: goldpulse-alerts
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persist database and logs
+      - ./data:/app/data
+      - ./logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Graceful shutdown (10 seconds for cleanup)
+    stop_grace_period: 10s
