@@ -137,13 +137,15 @@ class PriceFetcher:
                     return cached
 
             # Try sources in priority order
-            # 1. yfinance GC=F (most accurate for live gold price)
-            # 2. Yahoo Finance direct API (fallback)
-            # 3. GoldAPI.io (if key provided)
-            # 4. Google Finance (scrape)
-            # 5. ExchangeRate-API
+            # 1. Swissquote spot gold (XAU/USD) — most accurate spot price
+            # 2. yfinance GC=F (COMEX futures, includes premium)
+            # 3. Yahoo Finance direct API (fallback)
+            # 4. GoldAPI.io (if key provided)
+            # 5. Google Finance (scrape)
+            # 6. ExchangeRate-API
 
             sources = [
+                ("Swissquote (spot)", self._fetch_swissquote_spot),
                 ("yfinance (GC=F)", self._fetch_yfinance_gold),
                 ("Yahoo Finance", self._fetch_yahoo_direct),
                 ("GoldAPI.io", self._fetch_goldapi) if GOLDAPI_KEY else None,
@@ -169,6 +171,78 @@ class PriceFetcher:
                     continue
 
             logger.warning("Failed to fetch gold price from any source")
+            return None
+
+    async def _fetch_swissquote_spot(self) -> GoldPrice | None:
+        """
+        Fetch spot gold (XAU/USD) from Swissquote forex feed.
+
+        This is the PRIMARY source — returns real spot gold price,
+        NOT futures. Spot price matches what traders see on TradingView.
+
+        Swissquote provides free forex feed data including XAU/USD.
+        """
+        try:
+            session = await self._get_session()
+            url = "https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/XAU/USD"
+
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logger.debug("Swissquote returned HTTP %d", resp.status)
+                    return None
+                data = await resp.json()
+
+            if not data or not isinstance(data, list) or len(data) == 0:
+                logger.debug("Swissquote returned empty data")
+                return None
+
+            # Extract bid/ask from premium profile
+            spread_prices = data[0].get("spreadProfilePrices", [])
+            if not spread_prices:
+                logger.debug("Swissquote no spread prices")
+                return None
+
+            # Use first profile (premium) — bid and ask
+            bid = float(spread_prices[0].get("bid", 0))
+            ask = float(spread_prices[0].get("ask", 0))
+
+            if bid <= 0 or ask <= 0:
+                logger.debug("Swissquote invalid bid/ask: %s/%s", bid, ask)
+                return None
+
+            # Use mid-price as the spot price
+            price_usd = (bid + ask) / 2.0
+
+            # Sanity check
+            if price_usd < 100 or price_usd > 50000:
+                logger.debug("Swissquote price out of bounds: %.2f", price_usd)
+                return None
+
+            # Fetch INR rate and previous close for change calculation
+            inr_rate = await self._fetch_inr_rate()
+            price_inr = price_usd * inr_rate if inr_rate else None
+
+            # For change calculation, use cached previous price if available
+            change_usd = None
+            change_pct = None
+            if self._cache and self._cache.price_usd > 0:
+                change_usd = price_usd - self._cache.price_usd
+                change_pct = (change_usd / self._cache.price_usd) * 100
+
+            return GoldPrice(
+                price_usd=round(price_usd, 2),
+                price_inr=round(price_inr, 2) if price_inr else None,
+                change_usd=round(change_usd, 2) if change_usd is not None else None,
+                change_pct=round(change_pct, 2) if change_pct is not None else None,
+                source="Swissquote (spot)",
+                fetched_at=datetime.now(timezone.utc),
+            )
+
+        except Exception as e:
+            logger.debug("Swissquote spot fetch failed: %s", e)
             return None
 
     async def _fetch_yfinance_gold(self) -> GoldPrice | None:
@@ -268,8 +342,10 @@ class PriceFetcher:
         - Markup: ~12-15%
         """
         try:
-            # First get the international spot price (yfinance GC=F is primary)
-            spot_price = await self._fetch_yfinance_gold()
+            # First get the international spot price (Swissquote spot is primary)
+            spot_price = await self._fetch_swissquote_spot()
+            if not spot_price:
+                spot_price = await self._fetch_yfinance_gold()
             if not spot_price:
                 spot_price = await self._fetch_yahoo_direct()
             if not spot_price:
