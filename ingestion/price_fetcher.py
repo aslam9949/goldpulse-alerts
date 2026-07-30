@@ -4,13 +4,14 @@ GoldPulse Alerts — Gold Price Fetcher
 Fetches live gold price from multiple sources with automatic fallback.
 
 Sources (in priority order):
-1. Yahoo Finance direct API (most reliable, no library needed)
-2. Google Finance scrape
-3. metals.dev free API
+1. yfinance GC=F (COMEX Gold Futures — most accurate for live price)
+2. Yahoo Finance direct API (fallback, no library needed)
+3. Google Finance scrape
 4. GoldAPI.io (if key provided)
 
 Design decisions:
-- Direct HTTP to Yahoo Finance avoids yfinance library rate-limit issues
+- yfinance library with GC=F symbol is the primary source for accuracy
+- Direct HTTP to Yahoo Finance as fallback
 - Multiple fallbacks ensure we almost always get a price
 - Price is cached with a TTL to avoid hammering sources
 - We fetch both XAU/USD and optionally XAU/INR for Indian traders
@@ -21,6 +22,7 @@ import re
 import json
 from datetime import datetime, timezone
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 
 import aiohttp
 
@@ -79,6 +81,7 @@ class PriceFetcher:
         self._lock = asyncio.Lock()
         self._session: aiohttp.ClientSession | None = None
         self._session_lock = asyncio.Lock()
+        self._executor = ThreadPoolExecutor(max_workers=2)
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Lazy-init aiohttp session."""
@@ -90,9 +93,10 @@ class PriceFetcher:
         return self._session
 
     async def close(self) -> None:
-        """Clean up the HTTP session."""
+        """Clean up the HTTP session and thread pool."""
         if self._session and not self._session.closed:
             await self._session.close()
+        self._executor.shutdown(wait=False)
 
     async def __aenter__(self):
         return self
@@ -133,18 +137,14 @@ class PriceFetcher:
                     return cached
 
             # Try sources in priority order
-            # Try Indian gold price first (includes import duties, more accurate for MCX)
-            india_price = await self._fetch_indian_gold_price()
-            if india_price:
-                self._cache = india_price
-                self._cache_time = datetime.now(timezone.utc)
-                logger.info(
-                    "Gold price updated: %s (India direct)",
-                    india_price.format_inr(),
-                )
-                return india_price
+            # 1. yfinance GC=F (most accurate for live gold price)
+            # 2. Yahoo Finance direct API (fallback)
+            # 3. GoldAPI.io (if key provided)
+            # 4. Google Finance (scrape)
+            # 5. ExchangeRate-API
 
             sources = [
+                ("yfinance (GC=F)", self._fetch_yfinance_gold),
                 ("Yahoo Finance", self._fetch_yahoo_direct),
                 ("GoldAPI.io", self._fetch_goldapi) if GOLDAPI_KEY else None,
                 ("Google Finance", self._fetch_google_finance),
@@ -171,6 +171,83 @@ class PriceFetcher:
             logger.warning("Failed to fetch gold price from any source")
             return None
 
+    async def _fetch_yfinance_gold(self) -> GoldPrice | None:
+        """
+        Fetch gold price using yfinance library with GC=F (COMEX Gold Futures).
+
+        Attempts to use yfinance for accurate futures price.
+        Falls back to None if yfinance fails (Yahoo API changes frequently).
+
+        yfinance is synchronous, so we run it in a thread pool executor.
+        """
+        try:
+            import yfinance as yf
+
+            def _fetch_sync():
+                # Try yf.download first (more reliable than Ticker.history)
+                data = yf.download("GC=F", period="2d", progress=False)
+                if data.empty:
+                    # Fallback to Ticker API
+                    ticker = yf.Ticker("GC=F")
+                    hist = ticker.history(period="2d")
+                    if hist.empty:
+                        return None
+                    price_usd = float(hist["Close"].iloc[-1])
+                    prev_close = float(hist["Close"].iloc[-2]) if len(hist) >= 2 else None
+                    return price_usd, prev_close
+
+                price_usd = float(data["Close"].iloc[-1])
+                prev_close = float(data["Close"].iloc[-2]) if len(data) >= 2 else None
+                return price_usd, prev_close
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(self._executor, _fetch_sync)
+
+            if result is None:
+                logger.debug("yfinance GC=F returned no data")
+                return None
+
+            price_usd, prev_close = result
+
+            # Sanity check
+            if price_usd < 100 or price_usd > 50000:
+                logger.debug("yfinance GC=F price out of bounds: %.2f", price_usd)
+                return None
+
+            # Calculate change
+            change_usd = None
+            change_pct = None
+            if prev_close and prev_close > 0:
+                change_usd = price_usd - prev_close
+                change_pct = (change_usd / prev_close) * 100
+
+            # Fetch INR rate for Indian price
+            inr_rate = await self._fetch_inr_rate()
+            price_inr = price_usd * inr_rate if inr_rate else None
+
+            logger.info(
+                "yfinance GC=F: $%.2f (prev: %s, change: %s)",
+                price_usd,
+                f"${prev_close:.2f}" if prev_close else "N/A",
+                f"${change_usd:+.2f}" if change_usd is not None else "N/A",
+            )
+
+            return GoldPrice(
+                price_usd=round(price_usd, 2),
+                price_inr=round(price_inr, 2) if price_inr else None,
+                change_usd=round(change_usd, 2) if change_usd is not None else None,
+                change_pct=round(change_pct, 2) if change_pct is not None else None,
+                source="yfinance (GC=F)",
+                fetched_at=datetime.now(timezone.utc),
+            )
+
+        except ImportError:
+            logger.debug("yfinance not installed, skipping")
+            return None
+        except Exception as e:
+            logger.debug("yfinance GC=F fetch failed: %s", e)
+            return None
+
     async def _fetch_indian_gold_price(self) -> GoldPrice | None:
         """
         Get Indian gold price by applying India's import duty markup
@@ -191,8 +268,10 @@ class PriceFetcher:
         - Markup: ~12-15%
         """
         try:
-            # First get the international spot price
-            spot_price = await self._fetch_yahoo_direct()
+            # First get the international spot price (yfinance GC=F is primary)
+            spot_price = await self._fetch_yfinance_gold()
+            if not spot_price:
+                spot_price = await self._fetch_yahoo_direct()
             if not spot_price:
                 spot_price = await self._fetch_goldapi()
             if not spot_price:
