@@ -41,12 +41,16 @@ def score_article(
     """
     Score an article's relevance to gold trading (1-10).
 
+    STRICT scoring — only high-signal gold news should score 7.5+.
+
     Scoring breakdown:
-    - Keyword match:    0-5 points (primary keywords worth more)
-    - Source trust:      0-2 points (pre-configured per source)
-    - India/MCX boost:   0-1.5 points (extra for Indian traders)
-    - Recency:           0-1 point (newer = slightly more relevant)
-    - Title weight:      Title matches count 2x vs summary matches
+    - Primary keyword in TITLE:  0-5 points (mandatory for high scores)
+    - Primary keyword in BODY:   0-2 points (supplementary only)
+    - Secondary keyword match:   0-1.5 points (macro context)
+    - Source trust:              0-1.5 points (high-quality sources only)
+    - India/MCX boost:           0-1 point (Indian trader relevance)
+    - Recency:                   0-0.5 points (newer = slightly more relevant)
+    - Penalty:                  -2 points if NO primary keyword in title
 
     Args:
         article: The article to score
@@ -57,14 +61,11 @@ def score_article(
     """
     score = 0.0
 
-    # Combine title and summary for keyword matching
     title_lower = (article.title or "").lower()
     summary_lower = (article.summary or "").lower()
     full_text = f"{title_lower} {summary_lower}"
 
-    # ── 1. Primary keyword match (0-5 points) ──────────────────────
-    # Title matches are the strongest signal — if "gold" is in the title,
-    # it's almost certainly gold-relevant.
+    # ── 1. Primary keyword match — TITLE is mandatory for high scores ─
     primary_title_hits = 0
     primary_text_hits = 0
     for keyword in GOLD_KEYWORDS_PRIMARY:
@@ -74,7 +75,9 @@ def score_article(
         elif _keyword_in_text(kw, full_text):
             primary_text_hits += 1
 
-    # Title match is king — "gold" in title = very likely relevant
+    # Title match is the gatekeeper — no title match = cap at 6.0
+    has_title_primary = primary_title_hits >= 1
+
     if primary_title_hits >= 3:
         score += 5.0
     elif primary_title_hits >= 2:
@@ -82,11 +85,11 @@ def score_article(
     elif primary_title_hits >= 1:
         score += 3.0
     elif primary_text_hits >= 3:
-        score += 2.5
-    elif primary_text_hits >= 1:
         score += 1.5
+    elif primary_text_hits >= 1:
+        score += 0.8
 
-    # ── 2. Secondary keyword match (0-2 points) ────────────────────
+    # ── 2. Secondary keyword match (0-1.5 points) ────────────────────
     secondary_title_hits = 0
     secondary_text_hits = 0
     for keyword in GOLD_KEYWORDS_SECONDARY:
@@ -97,20 +100,26 @@ def score_article(
             secondary_text_hits += 1
 
     if secondary_title_hits >= 2:
-        score += 2.0
+        score += 1.5
     elif secondary_title_hits >= 1:
-        score += 1.2
+        score += 0.8
     elif secondary_text_hits >= 2:
-        score += 1.0
-    elif secondary_text_hits >= 1:
         score += 0.5
+    elif secondary_text_hits >= 1:
+        score += 0.2
 
-    # ── 3. Source trust score (0-2 points) ────────────────────────────
-    # Trust is 1-10 from config, normalize to 0-2
-    score += (article.trust_score / 10) * 2
+    # ── 3. Source trust score (0-1.5 points) ──────────────────────────
+    # Only high-trust sources (7+) get meaningful boost
+    trust = article.trust_score
+    if trust >= 9:
+        score += 1.5
+    elif trust >= 8:
+        score += 1.0
+    elif trust >= 7:
+        score += 0.5
+    # Low-trust sources get 0 — they need stronger keyword signals
 
-    # ── 4. India/MCX boost (0-2 points) ──────────────────────────────
-    # Extra relevance for Indian gold traders
+    # ── 4. India/MCX boost (0-1 point) ───────────────────────────────
     india_title_hits = 0
     india_text_hits = 0
     for keyword in INDIA_KEYWORDS:
@@ -120,16 +129,14 @@ def score_article(
         elif _keyword_in_text(kw, full_text):
             india_text_hits += 1
 
-    if india_title_hits >= 2:
-        score += 2.0
-    elif india_title_hits >= 1:
-        score += 1.2
-    elif india_text_hits >= 2:
+    if india_title_hits >= 1:
         score += 1.0
-    elif india_text_hits >= 1:
+    elif india_text_hits >= 2:
         score += 0.5
+    elif india_text_hits >= 1:
+        score += 0.2
 
-    # ── 5. Recency boost (0-1 point) ─────────────────────────────────
+    # ── 5. Recency boost (0-0.5 points) ──────────────────────────────
     if article.published_at:
         pub = article.published_at
         if pub.tzinfo is None:
@@ -138,19 +145,23 @@ def score_article(
             datetime.now(timezone.utc) - pub
         ).total_seconds() / 3600
         if age_hours < 1:
-            score += 1.0
+            score += 0.5
         elif age_hours < 3:
-            score += 0.7
+            score += 0.3
         elif age_hours < 6:
-            score += 0.4
-        elif age_hours < 12:
-            score += 0.2
+            score += 0.1
+
+    # ── Penalty: no primary keyword in title ──────────────────────────
+    # If "gold" / "xau" / "bullion" etc. isn't in the title,
+    # the article is likely tangential — cap at 6.0
+    if not has_title_primary:
+        score = min(score, 6.0)
 
     # ── Clamp to 1-10 ────────────────────────────────────────────────
     final_score = max(1.0, min(10.0, score))
 
     logger.debug(
-        "Scored '%s' = %.1f (primary=%d/%d, secondary=%d/%d, trust=%d, india=%d/%d)",
+        "Scored '%s' = %.1f (primary=%d/%d, secondary=%d/%d, trust=%d, india=%d/%d, title_gate=%s)",
         article.title[:60],
         final_score,
         primary_title_hits,
@@ -160,6 +171,7 @@ def score_article(
         article.trust_score,
         india_title_hits,
         india_text_hits,
+        has_title_primary,
     )
 
     return round(final_score, 1)

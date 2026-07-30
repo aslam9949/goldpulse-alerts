@@ -23,6 +23,7 @@ from ingestion.calendar_fetcher import CalendarFetcher, CalendarEvent
 from ingestion.price_fetcher import PriceFetcher
 from storage.database import Database
 from bot.formatter import format_calendar_alert
+from processing.relevance import classify_event_importance
 from utils.logger import get_logger
 
 logger = get_logger("alerts.calendar")
@@ -90,10 +91,15 @@ class CalendarAlertEngine:
 
     async def check_pre_alerts(self) -> int:
         """
-        Check for events that need pre-alerts.
+        Check for Tier-1 (critical) events that need pre-alerts.
 
-        Sends alerts for events happening within PRE_ALERT_MINUTES
-        that haven't been pre-alerted yet.
+        Only sends pre-alerts for critical events:
+        - FOMC Statement / Rate Decision
+        - Non-Farm Payrolls (NFP)
+        - CPI / Core CPI
+        - Powell speeches
+
+        Lower-impact events are logged but NOT pushed as instant alerts.
 
         Returns:
             Number of pre-alerts sent.
@@ -110,6 +116,18 @@ class CalendarAlertEngine:
                 try:
                     event = self._dict_to_event(evt_data)
                     if event is None:
+                        continue
+
+                    # ── Tier-1 gate: only pre-alert critical events ──
+                    importance = classify_event_importance(event.title)
+                    if importance != "critical":
+                        logger.info(
+                            "Skipping pre-alert (importance=%s): %s",
+                            importance,
+                            event.title,
+                        )
+                        # Mark as pre-alerted so we don't re-check
+                        self.db.mark_event_pre_alerted(event.event_id)
                         continue
 
                     message = format_calendar_alert(

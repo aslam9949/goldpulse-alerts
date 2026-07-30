@@ -22,7 +22,15 @@ def _int(name: str, default: int) -> int:
         return default
 
 
-def _validate_range(name: str, value: int, min_val: int, max_val: int) -> None:
+def _float(name: str, default: float) -> float:
+    """Safely parse a float from env, falling back to default."""
+    try:
+        return float(os.getenv(name, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
+def _validate_range(name: str, value: int | float, min_val: int | float, max_val: int | float) -> None:
     """Raise ValueError if value is outside the allowed range."""
     if not (min_val <= value <= max_val):
         raise ValueError(
@@ -46,9 +54,9 @@ GOLDAPI_KEY: str = os.getenv("GOLDAPI_KEY", "")
 # ── Alert Thresholds ─────────────────────────────────────────────────
 # Items scoring below this are stored but NOT pushed as instant alerts.
 # Range: 1–10. Higher = stricter (fewer but higher-quality alerts).
-# 5 is the sweet spot — catches real gold news without spam.
-# Set to 7+ only if you want very few, ultra-high-relevance alerts.
-ALERT_THRESHOLD: int = _int("ALERT_THRESHOLD", 5)
+# 7.5 = only high-signal gold news triggers instant alerts.
+# Lower to 5-6 if you want more alerts (more noise).
+ALERT_THRESHOLD: float = _float("ALERT_THRESHOLD", 7.5)
 _validate_range("ALERT_THRESHOLD", ALERT_THRESHOLD, 1, 10)
 
 # ── Digest Schedule (IST) ────────────────────────────────────────────
