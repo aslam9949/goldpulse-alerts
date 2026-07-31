@@ -54,9 +54,9 @@ GOLDAPI_KEY: str = os.getenv("GOLDAPI_KEY", "")
 # ── Alert Thresholds ─────────────────────────────────────────────────
 # Items scoring below this are stored but NOT pushed as instant alerts.
 # Range: 1–10. Higher = stricter (fewer but higher-quality alerts).
-# 7.5 = only high-signal gold news triggers instant alerts.
-# Lower to 5-6 if you want more alerts (more noise).
-ALERT_THRESHOLD: float = _float("ALERT_THRESHOLD", 7.5)
+# 6.0 = high-signal gold news only (no noise, but catches important moves)
+# Lower to 5 for more alerts, raise to 7+ for ultra-strict.
+ALERT_THRESHOLD: float = _float("ALERT_THRESHOLD", 6.0)
 _validate_range("ALERT_THRESHOLD", ALERT_THRESHOLD, 1, 10)
 
 # ── Digest Schedule (IST) ────────────────────────────────────────────

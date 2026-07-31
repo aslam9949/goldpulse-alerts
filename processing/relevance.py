@@ -79,11 +79,11 @@ def score_article(
     has_title_primary = primary_title_hits >= 1
 
     if primary_title_hits >= 3:
-        score += 5.0
+        score += 5.5
     elif primary_title_hits >= 2:
-        score += 4.0
+        score += 4.5
     elif primary_title_hits >= 1:
-        score += 3.0
+        score += 3.5
     elif primary_text_hits >= 3:
         score += 1.5
     elif primary_text_hits >= 1:
