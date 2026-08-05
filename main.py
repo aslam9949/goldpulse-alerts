@@ -33,6 +33,7 @@ from config.settings import (
     EVENING_DIGEST_HOUR,
 )
 from utils.logger import setup_logging, get_logger
+from utils import error_counter
 from storage.database import Database
 from ingestion.price_fetcher import PriceFetcher
 from bot.handlers import GoldPulseBot
@@ -227,7 +228,8 @@ class GoldPulseApp:
             if self.news_engine:
                 await self.news_engine.run_cycle()
         except Exception as e:
-            logger.error("News cycle job error: %s", e, exc_info=True)
+            logger.exception("News cycle job error: %s", e)
+            error_counter.bump("main")
 
     async def _run_calendar_sync(self) -> None:
         """Wrapper for calendar sync with error handling."""
@@ -235,7 +237,8 @@ class GoldPulseApp:
             if self.calendar_engine:
                 await self.calendar_engine.sync_events()
         except Exception as e:
-            logger.error("Calendar sync job error: %s", e, exc_info=True)
+            logger.exception("Calendar sync job error: %s", e)
+            error_counter.bump("main")
 
     async def _run_pre_alerts(self) -> None:
         """Wrapper for pre-event alerts with error handling."""
@@ -243,7 +246,8 @@ class GoldPulseApp:
             if self.calendar_engine:
                 await self.calendar_engine.check_pre_alerts()
         except Exception as e:
-            logger.error("Pre-alert job error: %s", e, exc_info=True)
+            logger.exception("Pre-alert job error: %s", e)
+            error_counter.bump("main")
 
     async def _run_post_alerts(self) -> None:
         """Wrapper for post-event alerts with error handling."""
@@ -251,7 +255,8 @@ class GoldPulseApp:
             if self.calendar_engine:
                 await self.calendar_engine.check_post_alerts()
         except Exception as e:
-            logger.error("Post-alert job error: %s", e, exc_info=True)
+            logger.exception("Post-alert job error: %s", e)
+            error_counter.bump("main")
 
     async def _run_morning_digest(self) -> None:
         """Wrapper for morning digest with error handling."""
@@ -259,7 +264,8 @@ class GoldPulseApp:
             if self.digest_engine:
                 await self.digest_engine.send_morning_digest()
         except Exception as e:
-            logger.error("Morning digest job error: %s", e, exc_info=True)
+            logger.exception("Morning digest job error: %s", e)
+            error_counter.bump("main")
 
     async def _run_evening_digest(self) -> None:
         """Wrapper for evening digest with error handling."""
@@ -267,7 +273,8 @@ class GoldPulseApp:
             if self.digest_engine:
                 await self.digest_engine.send_evening_digest()
         except Exception as e:
-            logger.error("Evening digest job error: %s", e, exc_info=True)
+            logger.exception("Evening digest job error: %s", e)
+            error_counter.bump("main")
 
     async def _run_cleanup(self) -> None:
         """Wrapper for database cleanup with error handling."""
@@ -276,7 +283,8 @@ class GoldPulseApp:
                 deleted = self.db.cleanup_old_data(days=30)
                 logger.info("Cleanup: removed %d old records", deleted)
         except Exception as e:
-            logger.error("Cleanup job error: %s", e, exc_info=True)
+            logger.exception("Cleanup job error: %s", e)
+            error_counter.bump("main")
 
     async def _refresh_price(self) -> None:
         """Refresh gold price cache."""
@@ -284,7 +292,8 @@ class GoldPulseApp:
             if self.price_fetcher:
                 await self.price_fetcher.get_price(force_refresh=True)
         except Exception as e:
-            logger.error("Price refresh error: %s", e, exc_info=True)
+            logger.exception("Price refresh error: %s", e)
+            error_counter.bump("main")
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -318,7 +327,8 @@ class GoldPulseApp:
             )
             await self.bot.broadcast(startup_msg)
         except Exception as e:
-            logger.warning("Could not send startup notification: %s", e)
+            logger.exception("Could not send startup notification: %s", e)
+            error_counter.bump("main")
 
         logger.info("GoldPulse is running! Press Ctrl+C to stop.")
 
@@ -353,34 +363,39 @@ class GoldPulseApp:
             if self.news_engine:
                 await self.news_engine.close()
         except Exception as e:
-            logger.error("Error closing news engine: %s", e, exc_info=True)
+            logger.exception("Error closing news engine: %s", e)
+            error_counter.bump("main")
 
         try:
             if self.calendar_engine:
                 await self.calendar_engine.close()
         except Exception as e:
-            logger.error("Error closing calendar engine: %s", e, exc_info=True)
+            logger.exception("Error closing calendar engine: %s", e)
+            error_counter.bump("main")
 
         # Stop bot
         try:
             if self.bot:
                 await self.bot.stop()
         except Exception as e:
-            logger.error("Error stopping bot: %s", e, exc_info=True)
+            logger.exception("Error stopping bot: %s", e)
+            error_counter.bump("main")
 
         # Close price fetcher
         try:
             if self.price_fetcher:
                 await self.price_fetcher.close()
         except Exception as e:
-            logger.error("Error closing price fetcher: %s", e, exc_info=True)
+            logger.exception("Error closing price fetcher: %s", e)
+            error_counter.bump("main")
 
         # Close database
         try:
             if self.db:
                 self.db.close()
         except Exception as e:
-            logger.error("Error closing database: %s", e, exc_info=True)
+            logger.exception("Error closing database: %s", e)
+            error_counter.bump("main")
 
         logger.info("GoldPulse shutdown complete")
 
@@ -409,7 +424,8 @@ async def main():
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received")
     except Exception as e:
-        logger.error("Fatal error: %s", e, exc_info=True)
+        logger.exception("Fatal error: %s", e)
+        error_counter.bump("main")
     finally:
         app.shutdown_event.set()
         await app.shutdown()

@@ -33,8 +33,20 @@ from config.settings import (
     INDIA_MARKUP,
 )
 from utils.logger import get_logger
+from utils import error_counter
 
 logger = get_logger("ingestion.price")
+
+# Known failure modes when fetching a price source: network/timeouts from
+# aiohttp, and parsing/type/shape errors from malformed third-party payloads.
+# Anything else is unexpected and must surface loudly (see each fetcher).
+_FETCH_ERRORS = (
+    aiohttp.ClientError,
+    asyncio.TimeoutError,
+    ValueError,
+    KeyError,
+    IndexError,
+)
 
 
 def apply_india_pricing(price_usd: float, inr_rate: float | None) -> float | None:
@@ -184,7 +196,8 @@ class PriceFetcher:
                         )
                         return price
                 except Exception as e:
-                    logger.debug("%s failed: %s", name, e)
+                    logger.exception("%s unexpected error: %s", name, e)
+                    error_counter.bump("ingestion.price")
                     continue
 
             logger.warning("Failed to fetch gold price from any source")
@@ -258,8 +271,12 @@ class PriceFetcher:
                 fetched_at=datetime.now(timezone.utc),
             )
 
-        except Exception as e:
+        except _FETCH_ERRORS as e:
             logger.debug("Swissquote spot fetch failed: %s", e)
+            return None
+        except Exception as e:  # unexpected — surface it
+            logger.exception("Swissquote spot fetch unexpected error: %s", e)
+            error_counter.bump("ingestion.price")
             return None
 
     async def _fetch_yfinance_gold(self) -> GoldPrice | None:
@@ -335,8 +352,12 @@ class PriceFetcher:
         except ImportError:
             logger.debug("yfinance not installed, skipping")
             return None
-        except Exception as e:
+        except _FETCH_ERRORS as e:
             logger.debug("yfinance GC=F fetch failed: %s", e)
+            return None
+        except Exception as e:  # unexpected — surface it
+            logger.exception("yfinance GC=F fetch unexpected error: %s", e)
+            error_counter.bump("ingestion.price")
             return None
 
     async def _fetch_yahoo_direct(self) -> GoldPrice | None:
@@ -418,8 +439,12 @@ class PriceFetcher:
                 fetched_at=datetime.now(timezone.utc),
             )
 
-        except Exception as e:
+        except _FETCH_ERRORS as e:
             logger.debug("Yahoo Finance direct fetch failed: %s", e)
+            return None
+        except Exception as e:  # unexpected — surface it
+            logger.exception("Yahoo Finance direct fetch unexpected error: %s", e)
+            error_counter.bump("ingestion.price")
             return None
 
     async def _fetch_goldapi(self) -> GoldPrice | None:
@@ -478,8 +503,12 @@ class PriceFetcher:
                 fetched_at=datetime.now(timezone.utc),
             )
 
-        except Exception as e:
+        except _FETCH_ERRORS as e:
             logger.debug("GoldAPI fetch failed: %s", e)
+            return None
+        except Exception as e:  # unexpected — surface it
+            logger.exception("GoldAPI fetch unexpected error: %s", e)
+            error_counter.bump("ingestion.price")
             return None
 
     async def _fetch_google_finance(self) -> GoldPrice | None:
@@ -556,8 +585,12 @@ class PriceFetcher:
                 fetched_at=datetime.now(timezone.utc),
             )
 
-        except Exception as e:
+        except _FETCH_ERRORS as e:
             logger.debug("Google Finance fetch failed: %s", e)
+            return None
+        except Exception as e:  # unexpected — surface it
+            logger.exception("Google Finance fetch unexpected error: %s", e)
+            error_counter.bump("ingestion.price")
             return None
 
     async def _fetch_exchangerate(self) -> GoldPrice | None:
@@ -610,8 +643,12 @@ class PriceFetcher:
                 fetched_at=datetime.now(timezone.utc),
             )
 
-        except Exception as e:
+        except _FETCH_ERRORS as e:
             logger.debug("ExchangeRate-API fetch failed: %s", e)
+            return None
+        except Exception as e:  # unexpected — surface it
+            logger.exception("ExchangeRate-API fetch unexpected error: %s", e)
+            error_counter.bump("ingestion.price")
             return None
 
     async def _fetch_inr_rate(self) -> float | None:
@@ -637,6 +674,10 @@ class PriceFetcher:
                         return None
                     logger.debug("USD/INR rate: %.2f", rate)
                 return rate if rate else None
-        except Exception as e:
+        except _FETCH_ERRORS as e:
             logger.debug("INR rate fetch failed (non-critical): %s", e)
+            return None
+        except Exception as e:  # unexpected — surface it
+            logger.exception("INR rate fetch unexpected error: %s", e)
+            error_counter.bump("ingestion.price")
             return None

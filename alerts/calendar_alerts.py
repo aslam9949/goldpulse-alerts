@@ -25,6 +25,7 @@ from storage.database import Database
 from bot.formatter import format_calendar_alert
 from processing.relevance import classify_event_importance
 from utils.logger import get_logger
+from utils import error_counter
 
 logger = get_logger("alerts.calendar")
 
@@ -86,7 +87,8 @@ class CalendarAlertEngine:
             return new_count
 
         except Exception as e:
-            logger.error("Calendar sync error: %s", e, exc_info=True)
+            logger.exception("Calendar sync error: %s", e)
+            error_counter.bump("alerts.calendar")
             return 0
 
     async def check_pre_alerts(self) -> int:
@@ -146,17 +148,18 @@ class CalendarAlertEngine:
                             self._minutes_until(event.event_time),
                         )
                 except Exception as e:
-                    logger.error(
+                    logger.exception(
                         "Pre-alert error for event %s: %s",
                         evt_data.get("event_id", "unknown"),
                         e,
-                        exc_info=True,
                     )
+                    error_counter.bump("alerts.calendar")
 
             return sent_count
 
         except Exception as e:
-            logger.error("Pre-alert check error: %s", e, exc_info=True)
+            logger.exception("Pre-alert check error: %s", e)
+            error_counter.bump("alerts.calendar")
             return 0
 
     async def check_post_alerts(self) -> int:
@@ -225,17 +228,18 @@ class CalendarAlertEngine:
                             event.actual,
                         )
                 except Exception as e:
-                    logger.error(
+                    logger.exception(
                         "Post-alert error for event %s: %s",
                         row.get("event_id", "unknown") if isinstance(row, dict) else "unknown",
                         e,
-                        exc_info=True,
                     )
+                    error_counter.bump("alerts.calendar")
 
             return sent_count
 
         except Exception as e:
-            logger.error("Post-alert check error: %s", e, exc_info=True)
+            logger.exception("Post-alert check error: %s", e)
+            error_counter.bump("alerts.calendar")
             return 0
 
     def _dict_to_event(self, data: dict) -> CalendarEvent | None:
@@ -263,7 +267,8 @@ class CalendarAlertEngine:
                 gold_impact_score=5,  # Default for stored events
             )
         except Exception as e:
-            logger.error("Failed to convert event dict: %s", e)
+            logger.exception("Failed to convert event dict: %s", e)
+            error_counter.bump("alerts.calendar")
             return None
 
     def _minutes_until(self, event_time: datetime) -> int:

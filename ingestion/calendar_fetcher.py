@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 import aiohttp
 
 from utils.logger import get_logger
+from utils import error_counter
 
 logger = get_logger("ingestion.calendar")
 
@@ -235,8 +236,12 @@ class CalendarFetcher:
         except asyncio.TimeoutError:
             logger.warning("Forex Factory fetch timed out (%s)", period_name)
             return []
-        except Exception as e:
-            logger.error("Forex Factory fetch error (%s): %s", period_name, e)
+        except aiohttp.ClientError as e:
+            logger.warning("Forex Factory network error (%s): %s", period_name, e)
+            return []
+        except Exception as e:  # unexpected — surface it
+            logger.exception("Forex Factory fetch unexpected error (%s): %s", period_name, e)
+            error_counter.bump("ingestion.calendar")
             return []
 
         events = []

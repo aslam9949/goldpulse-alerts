@@ -24,6 +24,7 @@ import feedparser
 
 from config.settings import RSS_FEEDS, GEOPOLITICAL_RSS_FEEDS
 from utils.logger import get_logger
+from utils import error_counter
 
 logger = get_logger("ingestion.rss")
 
@@ -173,8 +174,12 @@ class RSSFetcher:
         except asyncio.TimeoutError:
             logger.warning("Feed '%s' timed out", name)
             return []
-        except Exception as e:
-            logger.error("Feed '%s' error: %s", name, e)
+        except aiohttp.ClientError as e:
+            logger.warning("Feed '%s' network error: %s", name, e)
+            return []
+        except Exception as e:  # unexpected — surface it
+            logger.exception("Feed '%s' unexpected error: %s", name, e)
+            error_counter.bump("ingestion.rss")
             return []
 
     def _parse_entry(

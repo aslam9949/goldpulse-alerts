@@ -39,6 +39,7 @@ from bot.formatter import (
     _score_indicator,
 )
 from utils.logger import get_logger
+from utils import error_counter
 
 logger = get_logger("bot.handlers")
 
@@ -141,7 +142,8 @@ class GoldPulseBot:
                     reply_markup=build_main_menu(),
                 )
             except Exception as e:
-                logger.error("Start command error: %s", e)
+                logger.exception("Start command error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Welcome! Type /help to see available commands.")
 
         @self.router.message(Command("menu"))
@@ -155,7 +157,8 @@ class GoldPulseBot:
                     reply_markup=build_main_menu(),
                 )
             except Exception as e:
-                logger.error("Menu command error: %s", e)
+                logger.exception("Menu command error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Failed to load menu. Try again later.")
 
         @self.router.message(Command("help"))
@@ -165,7 +168,8 @@ class GoldPulseBot:
             try:
                 await message.answer(format_help(), reply_markup=build_back_menu())
             except Exception as e:
-                logger.error("Help command error: %s", e)
+                logger.exception("Help command error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Failed to load help. Try again later.")
 
         @self.router.message(Command("price"))
@@ -176,7 +180,8 @@ class GoldPulseBot:
                 price = await self.price_fetcher.get_price()
                 await message.answer(format_price_update(price), reply_markup=build_back_menu())
             except Exception as e:
-                logger.error("Price command error: %s", e)
+                logger.exception("Price command error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Failed to fetch gold price. Try again later.")
 
         @self.router.message(Command("latest"))
@@ -187,7 +192,8 @@ class GoldPulseBot:
                 text = await self._build_latest_text()
                 await message.answer(text, reply_markup=build_back_menu())
             except Exception as e:
-                logger.error("Latest command error: %s", e)
+                logger.exception("Latest command error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Failed to fetch news. Try again later.")
 
         @self.router.message(Command("digest"))
@@ -198,7 +204,8 @@ class GoldPulseBot:
                 text = await self._build_digest_text()
                 await message.answer(text, reply_markup=build_back_menu())
             except Exception as e:
-                logger.error("Digest command error: %s", e)
+                logger.exception("Digest command error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Failed to generate digest. Try again later.")
 
         @self.router.message(Command("upcoming"))
@@ -209,7 +216,8 @@ class GoldPulseBot:
                 text = await self._build_upcoming_text()
                 await message.answer(text, reply_markup=build_back_menu())
             except Exception as e:
-                logger.error("Upcoming command error: %s", e)
+                logger.exception("Upcoming command error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Failed to fetch events. Try again later.")
 
         @self.router.message(Command("settings"))
@@ -220,7 +228,8 @@ class GoldPulseBot:
                 text = self._build_settings_text()
                 await message.answer(text, reply_markup=build_back_menu())
             except Exception as e:
-                logger.error("Settings command error: %s", e)
+                logger.exception("Settings command error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Failed to load settings. Try again later.")
 
         @self.router.message(Command("health"))
@@ -230,9 +239,13 @@ class GoldPulseBot:
             try:
                 stats = self.db.get_stats()
                 price = await self.price_fetcher.get_price()
-                await message.answer(format_health(stats, price), reply_markup=build_back_menu())
+                await message.answer(
+                    format_health(stats, price, error_counter.snapshot()),
+                    reply_markup=build_back_menu(),
+                )
             except Exception as e:
-                logger.error("Health check error: %s", e, exc_info=True)
+                logger.exception("Health check error: %s", e)
+                error_counter.bump("bot.handlers")
                 await message.answer("⚠️ Health check failed. Please try again later.")
 
     def _register_callbacks(self) -> None:
@@ -249,7 +262,8 @@ class GoldPulseBot:
                 )
                 await callback.answer()
             except Exception as e:
-                logger.error("Menu callback error: %s", e)
+                logger.exception("Menu callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer("⚠️ Error loading menu", show_alert=True)
 
         @self.router.callback_query(F.data == "menu_close")
@@ -259,7 +273,8 @@ class GoldPulseBot:
                 await callback.message.delete()
                 await callback.answer()
             except Exception as e:
-                logger.error("Close callback error: %s", e)
+                logger.exception("Close callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer()
 
         @self.router.callback_query(F.data == "menu_latest")
@@ -270,7 +285,8 @@ class GoldPulseBot:
                 await callback.message.edit_text(text, reply_markup=build_close_menu())
                 await callback.answer()
             except Exception as e:
-                logger.error("Latest callback error: %s", e)
+                logger.exception("Latest callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer("⚠️ Error fetching news", show_alert=True)
 
         @self.router.callback_query(F.data == "menu_price")
@@ -282,7 +298,8 @@ class GoldPulseBot:
                 await callback.message.edit_text(text, reply_markup=build_close_menu())
                 await callback.answer()
             except Exception as e:
-                logger.error("Price callback error: %s", e)
+                logger.exception("Price callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer("⚠️ Error fetching price", show_alert=True)
 
         @self.router.callback_query(F.data == "menu_upcoming")
@@ -293,7 +310,8 @@ class GoldPulseBot:
                 await callback.message.edit_text(text, reply_markup=build_close_menu())
                 await callback.answer()
             except Exception as e:
-                logger.error("Upcoming callback error: %s", e)
+                logger.exception("Upcoming callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer("⚠️ Error fetching events", show_alert=True)
 
         @self.router.callback_query(F.data == "menu_digest")
@@ -304,7 +322,8 @@ class GoldPulseBot:
                 await callback.message.edit_text(text, reply_markup=build_close_menu())
                 await callback.answer()
             except Exception as e:
-                logger.error("Digest callback error: %s", e)
+                logger.exception("Digest callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer("⚠️ Error generating digest", show_alert=True)
 
         @self.router.callback_query(F.data == "menu_settings")
@@ -315,7 +334,8 @@ class GoldPulseBot:
                 await callback.message.edit_text(text, reply_markup=build_close_menu())
                 await callback.answer()
             except Exception as e:
-                logger.error("Settings callback error: %s", e)
+                logger.exception("Settings callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer("⚠️ Error loading settings", show_alert=True)
 
         @self.router.callback_query(F.data == "menu_health")
@@ -324,11 +344,12 @@ class GoldPulseBot:
             try:
                 stats = self.db.get_stats()
                 price = await self.price_fetcher.get_price()
-                text = format_health(stats, price)
+                text = format_health(stats, price, error_counter.snapshot())
                 await callback.message.edit_text(text, reply_markup=build_close_menu())
                 await callback.answer()
             except Exception as e:
-                logger.error("Health callback error: %s", e)
+                logger.exception("Health callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer("⚠️ Error checking health", show_alert=True)
 
         @self.router.callback_query(F.data == "menu_help")
@@ -339,7 +360,8 @@ class GoldPulseBot:
                 await callback.message.edit_text(text, reply_markup=build_close_menu())
                 await callback.answer()
             except Exception as e:
-                logger.error("Help callback error: %s", e)
+                logger.exception("Help callback error: %s", e)
+                error_counter.bump("bot.handlers")
                 await callback.answer("⚠️ Error loading help", show_alert=True)
 
     # ── Text Builders ──────────────────────────────────────────────────
@@ -455,7 +477,8 @@ class GoldPulseBot:
             )
             return True
         except Exception as e:
-            logger.error("Failed to send alert to %s: %s", chat_id, e)
+            logger.exception("Failed to send alert to %s: %s", chat_id, e)
+            error_counter.bump("bot.handlers")
             return False
 
     async def broadcast(self, text: str) -> int:
@@ -511,7 +534,8 @@ class GoldPulseBot:
             await self.bot.set_my_commands(commands)
             logger.info("Bot commands registered with Telegram")
         except Exception as e:
-            logger.error("Failed to register commands: %s", e, exc_info=True)
+            logger.exception("Failed to register commands: %s", e)
+            error_counter.bump("bot.handlers")
 
     async def start_polling(self) -> None:
         """Start the bot with long polling."""
@@ -523,7 +547,8 @@ class GoldPulseBot:
             await self.bot.delete_webhook(drop_pending_updates=True)
             await self.dp.start_polling(self.bot)
         except Exception as e:
-            logger.error("Bot polling error: %s", e, exc_info=True)
+            logger.exception("Bot polling error: %s", e)
+            error_counter.bump("bot.handlers")
             raise
 
     async def stop(self) -> None:
@@ -533,4 +558,5 @@ class GoldPulseBot:
             await self.dp.stop_polling()
             await self.bot.session.close()
         except Exception as e:
-            logger.error("Bot stop error: %s", e)
+            logger.exception("Bot stop error: %s", e)
+            error_counter.bump("bot.handlers")

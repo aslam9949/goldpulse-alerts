@@ -431,7 +431,11 @@ def format_help() -> str:
     return "\n".join(lines)
 
 
-def format_health(stats: dict[str, int], price: GoldPrice | None) -> str:
+def format_health(
+    stats: dict[str, int],
+    price: GoldPrice | None,
+    error_counts: dict[str, int] | None = None,
+) -> str:
     """Format a health check message."""
     lines = []
     lines.append("✅ GoldPulse Health Check")
@@ -446,6 +450,18 @@ def format_health(stats: dict[str, int], price: GoldPrice | None) -> str:
         lines.append(f"🥇 Gold price: {price.format_usd()} ({clean_text(price.source)})")
     else:
         lines.append("⚠️ Gold price: unavailable")
+
+    # Per-module error counters (since last restart) — makes silent
+    # failures visible at a glance.
+    errors = error_counts or {}
+    if errors:
+        lines.append("")
+        lines.append("🚨 Errors since start:")
+        for module, count in errors.items():
+            lines.append(f"   • {module}: {count}")
+    else:
+        lines.append("")
+        lines.append("🚨 Errors since start: none ✅")
 
     lines.append(f"\n🕐 {_format_time_ist(datetime.now(IST))}")
     return "\n".join(lines)

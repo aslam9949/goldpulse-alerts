@@ -18,6 +18,7 @@ from storage.database import Database
 from ingestion.price_fetcher import PriceFetcher
 from bot.formatter import format_digest
 from utils.logger import get_logger
+from utils import error_counter
 
 logger = get_logger("alerts.digest")
 
@@ -82,11 +83,12 @@ class DigestEngine:
                     try:
                         self.db.mark_article_digested(art["id"])
                     except Exception as mark_err:
-                        logger.error(
+                        logger.exception(
                             "Failed to mark article %s as digested: %s",
                             art["id"],
                             mark_err,
                         )
+                        error_counter.bump("alerts.digest")
                 logger.info(
                     "Morning digest sent (%d articles, %d events)",
                     len(articles),
@@ -98,7 +100,8 @@ class DigestEngine:
                 return False
 
         except Exception as e:
-            logger.error("Morning digest error: %s", e, exc_info=True)
+            logger.exception("Morning digest error: %s", e)
+            error_counter.bump("alerts.digest")
             return False
 
     async def send_evening_digest(self) -> bool:
@@ -140,11 +143,12 @@ class DigestEngine:
                     try:
                         self.db.mark_article_digested(art["id"])
                     except Exception as mark_err:
-                        logger.error(
+                        logger.exception(
                             "Failed to mark article %s as digested: %s",
                             art["id"],
                             mark_err,
                         )
+                        error_counter.bump("alerts.digest")
                 logger.info(
                     "Evening digest sent (%d articles, %d events)",
                     len(articles),
@@ -156,7 +160,8 @@ class DigestEngine:
                 return False
 
         except Exception as e:
-            logger.error("Evening digest error: %s", e, exc_info=True)
+            logger.exception("Evening digest error: %s", e)
+            error_counter.bump("alerts.digest")
             return False
 
     async def send_on_demand_digest(self) -> bool:
@@ -189,15 +194,17 @@ class DigestEngine:
                     try:
                         self.db.mark_article_digested(art["id"])
                     except Exception as mark_err:
-                        logger.error(
+                        logger.exception(
                             "Failed to mark article %s as digested: %s",
                             art["id"],
                             mark_err,
                         )
+                        error_counter.bump("alerts.digest")
                 return True
             else:
                 return False
 
         except Exception as e:
-            logger.error("On-demand digest error: %s", e, exc_info=True)
+            logger.exception("On-demand digest error: %s", e)
+            error_counter.bump("alerts.digest")
             return False

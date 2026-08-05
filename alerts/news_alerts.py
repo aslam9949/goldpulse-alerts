@@ -28,6 +28,7 @@ from processing.dedup import Deduplicator
 from processing.language_filter import is_english_candidate
 from config.settings import ALERT_COOLDOWN_MINUTES
 from storage.database import Database
+from utils import error_counter
 from bot.formatter import format_news_alert, is_article_too_old
 from utils.logger import get_logger
 
@@ -204,7 +205,8 @@ class NewsAlertEngine:
             )
 
         except Exception as e:
-            logger.error("News cycle error: %s", e, exc_info=True)
+            logger.exception("News cycle error: %s", e)
+            error_counter.bump("alerts.news")
 
         return stats
 
@@ -275,7 +277,8 @@ class NewsAlertEngine:
             return "sent" if sent else "failed"
 
         except Exception as e:
-            logger.error("Alert send error: %s", e, exc_info=True)
+            logger.exception("Alert send error: %s", e)
+            error_counter.bump("alerts.news")
             return "failed"
 
     async def close(self) -> None:

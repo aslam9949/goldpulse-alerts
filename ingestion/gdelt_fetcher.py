@@ -24,6 +24,7 @@ from config.settings import (
     GDELT_GEOPOLITICAL_QUERIES,
 )
 from utils.logger import get_logger
+from utils import error_counter
 from ingestion.rss_fetcher import Article
 
 logger = get_logger("ingestion.gdelt")
@@ -120,8 +121,9 @@ class GDELTFetcher:
                     if article.url not in seen_urls:
                         seen_urls.add(article.url)
                         all_articles.append(article)
-            except Exception as e:
-                logger.error("GDELT query '%s' failed: %s", query, e)
+            except Exception as e:  # unexpected — surface it
+                logger.exception("GDELT query '%s' unexpected error: %s", query, e)
+                error_counter.bump("ingestion.gdelt")
 
         logger.info("GDELT: fetched %d unique articles", len(all_articles))
         return all_articles
