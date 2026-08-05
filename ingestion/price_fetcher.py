@@ -26,14 +26,31 @@ from concurrent.futures import ThreadPoolExecutor
 
 import aiohttp
 
-from config.settings import GOLD_PRICE_SOURCE, GOLDAPI_KEY, PRICE_REFRESH_MINUTES
+from config.settings import (
+    GOLD_PRICE_SOURCE,
+    GOLDAPI_KEY,
+    PRICE_REFRESH_MINUTES,
+    INDIA_MARKUP,
+)
 from utils.logger import get_logger
 
 logger = get_logger("ingestion.price")
 
-# India markup (import duties + taxes + premium)
-# Calibrated to match real Indian gold prices
-INDIA_MARKUP = 1.15  # 15% markup
+
+def apply_india_pricing(price_usd: float, inr_rate: float | None) -> float | None:
+    """
+    India-calibrated INR price: USD spot x USD/INR x India markup.
+
+    The markup (customs duty + GST + dealer premium) is set in
+    config/settings.py (INDIA_MARKUP). Every fetch path must go through
+    this function so a fallback source can never quietly drop the markup.
+
+    Returns:
+        float INR price, or None when the INR rate is unavailable.
+    """
+    if inr_rate is None or price_usd is None:
+        return None
+    return price_usd * inr_rate * INDIA_MARKUP
 
 
 @dataclass(frozen=True)
@@ -223,7 +240,7 @@ class PriceFetcher:
 
             # Fetch INR rate and previous close for change calculation
             inr_rate = await self._fetch_inr_rate()
-            price_inr = price_usd * inr_rate if inr_rate else None
+            price_inr = apply_india_pricing(price_usd, inr_rate)
 
             # For change calculation, use cached previous price if available
             change_usd = None
@@ -297,7 +314,7 @@ class PriceFetcher:
 
             # Fetch INR rate for Indian price
             inr_rate = await self._fetch_inr_rate()
-            price_inr = price_usd * inr_rate if inr_rate else None
+            price_inr = apply_india_pricing(price_usd, inr_rate)
 
             logger.info(
                 "yfinance GC=F: $%.2f (prev: %s, change: %s)",
@@ -320,59 +337,6 @@ class PriceFetcher:
             return None
         except Exception as e:
             logger.debug("yfinance GC=F fetch failed: %s", e)
-            return None
-
-    async def _fetch_indian_gold_price(self) -> GoldPrice | None:
-        """
-        Get Indian gold price by applying India's import duty markup
-        to the international spot price.
-
-        India's gold price is ~15% higher than international spot due to:
-        - Basic Customs Duty: ~6%
-        - Agriculture Infrastructure Cess: ~2.5%
-        - GST: ~3%
-        - India demand premium: ~3-4%
-
-        This gives the actual price Indian traders pay — which is what
-        MCX futures are based on.
-
-        As of July 2026:
-        - International spot: ~$4,083/oz (~₹12,686/gram)
-        - Indian gold (24K): ~₹14,200-14,600/gram
-        - Markup: ~12-15%
-        """
-        try:
-            # First get the international spot price (Swissquote spot is primary)
-            spot_price = await self._fetch_swissquote_spot()
-            if not spot_price:
-                spot_price = await self._fetch_yfinance_gold()
-            if not spot_price:
-                spot_price = await self._fetch_yahoo_direct()
-            if not spot_price:
-                spot_price = await self._fetch_goldapi()
-            if not spot_price:
-                return None
-
-            # Apply India markup (import duties + taxes + premium)
-            # Uses module-level INDIA_MARKUP constant
-
-            india_price_inr = spot_price.price_inr * INDIA_MARKUP if spot_price.price_inr else None
-            india_price_usd = spot_price.price_usd  # USD stays same for reference
-
-            if india_price_inr is None:
-                return None
-
-            return GoldPrice(
-                price_usd=round(india_price_usd, 2),
-                price_inr=round(india_price_inr, 2),
-                change_usd=spot_price.change_usd,
-                change_pct=spot_price.change_pct,
-                source=f"India ({spot_price.source} + duty)",
-                fetched_at=datetime.now(timezone.utc),
-            )
-
-        except Exception as e:
-            logger.debug("Indian gold price calculation failed: %s", e)
             return None
 
     async def _fetch_yahoo_direct(self) -> GoldPrice | None:
@@ -443,7 +407,7 @@ class PriceFetcher:
                 change_pct = (change_usd / prev_close) * 100
 
             inr_rate = await self._fetch_inr_rate()
-            price_inr = price_usd * inr_rate if inr_rate else None
+            price_inr = apply_india_pricing(price_usd, inr_rate)
 
             return GoldPrice(
                 price_usd=round(price_usd, 2),
@@ -503,7 +467,7 @@ class PriceFetcher:
                 change_pct = (change_usd / prev_close) * 100
 
             inr_rate = await self._fetch_inr_rate()
-            price_inr = price_usd * inr_rate if inr_rate else None
+            price_inr = apply_india_pricing(price_usd, inr_rate)
 
             return GoldPrice(
                 price_usd=round(price_usd, 2),
@@ -581,7 +545,7 @@ class PriceFetcher:
                     change_usd = None
 
             inr_rate = await self._fetch_inr_rate()
-            price_inr = price_usd * inr_rate if inr_rate else None
+            price_inr = apply_india_pricing(price_usd, inr_rate)
 
             return GoldPrice(
                 price_usd=round(price_usd, 2),
@@ -635,7 +599,7 @@ class PriceFetcher:
                 return None
 
             inr_rate = await self._fetch_inr_rate()
-            price_inr = price_usd * inr_rate if inr_rate else None
+            price_inr = apply_india_pricing(price_usd, inr_rate)
 
             return GoldPrice(
                 price_usd=round(price_usd, 2),

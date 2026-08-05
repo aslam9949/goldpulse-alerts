@@ -51,6 +51,12 @@ ADMIN_CHAT_IDS: list[str] = [x.strip() for x in _admin_raw.split(",") if x.strip
 GOLD_PRICE_SOURCE: str = os.getenv("GOLD_PRICE_SOURCE", "yfinance")
 GOLDAPI_KEY: str = os.getenv("GOLDAPI_KEY", "")
 
+# India markup applied to every INR price path: customs duty + GST +
+# dealer premium. This is an ACTIVE decision — recalibrate against real
+# MCX/retail rates when India's budget changes duties.
+# Last checked: 2026-08-05 (spot ~$4,157/oz vs ~₹14.2-14.6k/gram retail ≈ 12-15%)
+INDIA_MARKUP: float = _float("INDIA_MARKUP", 1.15)
+
 # ── Alert Thresholds ─────────────────────────────────────────────────
 # Items scoring below this are stored but NOT pushed as instant alerts.
 # Range: 1–10. Higher = stricter (fewer but higher-quality alerts).
