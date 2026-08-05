@@ -18,7 +18,7 @@ import re
 from datetime import datetime, timezone
 
 from config.settings import (
-    GOLD_KEYWORDS_PRIMARY,
+    GOLD_KEYWORD_CONCEPTS,
     GOLD_KEYWORDS_SECONDARY,
     INDIA_KEYWORDS,
     ALERT_THRESHOLD,
@@ -28,10 +28,76 @@ from utils.logger import get_logger
 
 logger = get_logger("processing.relevance")
 
+# source_category tag for geopolitical-track articles (see ingestion)
+GEOPOLITICAL_TAG = "geopolitical"
+
+# ── Impact signals (independent of keyword repetition) ──────────────
+# A "gold price" headline with no substance used to score the same as one
+# with a real quantity, a named institution, or an escalation behind it.
+# These patterns give importance a signal that repetition can't fake.
+_QUANTITY_RE = re.compile(
+    r"\b\d[\d,.]*\s*(tonnes?|tons?|ounces?|oz|grams?|kg|troy)\b"
+    r"|\$\s?\d[\d,.]+\s*(k|m|b|bn)?\b"
+    r"|\b\d[\d,.]*\s*%"
+    r"|\b\d+\s*(bp|basis\s+points)\b"
+)
+_NAMED_INSTITUTION_RE = re.compile(
+    r"\b(fed\b|federal\s+reserve|ecb\b|european\s+central\s+bank|boj\b|"
+    r"bank\s+of\s+japan|rbi\b|reserve\s+bank\s+of\s+india|pboc\b|"
+    r"people's\s+bank\s+of\s+china|boe\b|bank\s+of\s+england|"
+    r"powell|lagarde|goldman\s+sachs|jpmorgan|ubs\b|world\s+bank|imf\b)"
+)
+_MONETARY_ACTION_RE = re.compile(
+    r"\b(cuts?|hikes?|raises?|lowers?|reduces?)\s+(interest\s+rates?|rates?)\b"
+    r"|\brate\s+(cut|hike|decision)\b"
+)
+# High-escalation terms: events that move gold as a safe haven.
+_ESCALATION_HIGH_RE = re.compile(
+    r"\b(war|invasion|nuclear|missile|airstrikes?|air\s+strikes?|sanctions?|"
+    r"oil\s+embargo|embargo|coup|martial\s+law|warheads?|shelling|troops?|"
+    r"military\s+(action|operation|buildup|strike))\b"
+)
+# Lower-escalation terms: present but less likely to be price-moving.
+_ESCALATION_LOW_RE = re.compile(
+    r"\b(ceasefire|tensions?|conflict|crisis|attack|border\s+clash|uprising)\b"
+)
+
 
 def _keyword_in_text(keyword: str, text: str) -> bool:
     """Check if keyword appears in text using word-boundary matching."""
     return bool(re.search(r"\b" + re.escape(keyword) + r"\b", text))
+
+
+def _concept_hits(text: str) -> set[str]:
+    """
+    Distinct gold-concept buckets hit in ``text``.
+
+    Longest keyword wins: a bare "gold" occurring inside "gold price" is
+    attributed to the phrase, not counted as a second hit of its own
+    bucket. Counting distinct buckets (not raw list entries) is what stops
+    "gold price hits high as gold rally continues" from triple-scoring.
+    """
+    buckets: set[str] = set()
+    covered: list[tuple[int, int]] = []
+
+    flat = [
+        (kw, bucket)
+        for bucket, keywords in GOLD_KEYWORD_CONCEPTS.items()
+        for kw in keywords
+    ]
+    flat.sort(key=lambda kv: len(kv[0]), reverse=True)
+
+    for kw, bucket in flat:
+        pattern = re.compile(r"\b" + re.escape(kw) + r"\b")
+        for match in pattern.finditer(text):
+            start, end = match.span()
+            if any(cs <= start and end <= ce for cs, ce in covered):
+                continue  # inside an already-claimed longer phrase
+            buckets.add(bucket)
+            covered.append((start, end))
+            break  # one occurrence per keyword is enough
+
+    return buckets
 
 
 def score_article(
@@ -65,18 +131,14 @@ def score_article(
     summary_lower = (article.summary or "").lower()
     full_text = f"{title_lower} {summary_lower}"
 
-    # ── 1. Primary keyword match — TITLE is mandatory for high scores ─
-    primary_title_hits = 0
-    primary_text_hits = 0
-    for keyword in GOLD_KEYWORDS_PRIMARY:
-        kw = keyword.lower()
-        if _keyword_in_text(kw, title_lower):
-            primary_title_hits += 1
-        elif _keyword_in_text(kw, full_text):
-            primary_text_hits += 1
+    # source_category distinguishes the geopolitical ingestion track (S1)
+    is_geopolitical = GEOPOLITICAL_TAG in article.tags
 
-    # Title match is the gatekeeper — no title match = cap at 6.0
-    has_title_primary = primary_title_hits >= 1
+    # ── 1. Concept-bucket match — TITLE is mandatory for high scores ─
+    title_concepts = _concept_hits(title_lower)
+    text_concepts = _concept_hits(full_text)
+    primary_title_hits = len(title_concepts)
+    primary_text_hits = len(text_concepts)
 
     if primary_title_hits >= 3:
         score += 5.5
@@ -151,17 +213,26 @@ def score_article(
         elif age_hours < 6:
             score += 0.1
 
-    # ── Penalty: no primary keyword in title ──────────────────────────
-    # If "gold" / "xau" / "bullion" etc. isn't in the title,
-    # the article is likely tangential — cap at 6.0
-    if not has_title_primary:
+    # ── 6. Impact signal (independent of keyword repetition) ─────────
+    # Gold-track: quantity / named institution / escalation add a bonus.
+    # Geopolitical-track: the impact signal IS the score — these articles
+    # rarely mention "gold", so they're exempt from the title gate below.
+    if is_geopolitical:
+        score += _geopolitical_impact(title_lower, full_text)
+    else:
+        score += _gold_impact(title_lower, full_text)
+
+    # ── Gate: no primary concept in title → cap at 6.0 ───────────────
+    # Geopolitical-track articles are exempt — their score comes from the
+    # impact signal, not from saying the word "gold".
+    if not is_geopolitical and primary_title_hits == 0:
         score = min(score, 6.0)
 
     # ── Clamp to 1-10 ────────────────────────────────────────────────
     final_score = max(1.0, min(10.0, score))
 
     logger.debug(
-        "Scored '%s' = %.1f (primary=%d/%d, secondary=%d/%d, trust=%d, india=%d/%d, title_gate=%s)",
+        "Scored '%s' = %.1f (concepts=%d/%d, secondary=%d/%d, trust=%d, india=%d/%d, geo=%s, title_gate=%s)",
         article.title[:60],
         final_score,
         primary_title_hits,
@@ -171,10 +242,62 @@ def score_article(
         article.trust_score,
         india_title_hits,
         india_text_hits,
-        has_title_primary,
+        is_geopolitical,
+        (not is_geopolitical and primary_title_hits == 0),
     )
 
     return round(final_score, 1)
+
+
+def _gold_impact(title: str, full_text: str) -> float:
+    """
+    Impact bonus for gold-track articles (max 3.0).
+
+    Rewards substance — a real tonnage figure, a named central bank, or
+    an escalation — that bare keyword repetition can't fake.
+    """
+    bonus = 0.0
+    if _QUANTITY_RE.search(full_text):
+        bonus += 1.5
+    if _NAMED_INSTITUTION_RE.search(title):
+        bonus += 1.0
+    if _ESCALATION_HIGH_RE.search(title) or _ESCALATION_LOW_RE.search(title):
+        bonus += 0.5
+    return bonus
+
+
+def _geopolitical_impact(title: str, full_text: str) -> float:
+    """
+    Impact-driven score for geopolitical-track articles (max 7.5).
+
+    These articles rarely mention "gold", so the escalation / central-bank
+    / monetary-action signal IS their relevance. The on-track base keeps
+    high-trust shock headlines from being mere digest fodder, while low
+    trust sources still need a strong signal to clear the alert threshold.
+    """
+    bonus = 1.0  # on-track base — this track is high-precision by construction
+    if _ESCALATION_HIGH_RE.search(title):
+        bonus += 3.5
+    elif _ESCALATION_HIGH_RE.search(full_text):
+        bonus += 2.0
+
+    if _ESCALATION_LOW_RE.search(title):
+        bonus += 2.0
+    elif _ESCALATION_LOW_RE.search(full_text):
+        bonus += 1.0
+
+    if _NAMED_INSTITUTION_RE.search(title):
+        bonus += 1.5
+    elif _NAMED_INSTITUTION_RE.search(full_text):
+        bonus += 1.0
+
+    if _MONETARY_ACTION_RE.search(full_text):
+        bonus += 3.0
+
+    if _QUANTITY_RE.search(full_text):
+        bonus += 0.5
+
+    return bonus
 
 
 def should_alert(score: float) -> bool:

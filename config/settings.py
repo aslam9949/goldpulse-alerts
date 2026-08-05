@@ -184,20 +184,36 @@ GDELT_GEOPOLITICAL_QUERIES: list[str] = [
 # Minimum minutes between alerts for the same topic cluster
 ALERT_COOLDOWN_MINUTES: int = _int("ALERT_COOLDOWN_MINUTES", 30)
 
-# ── Gold Keywords (used for relevance scoring) ───────────────────────
-GOLD_KEYWORDS_PRIMARY: list[str] = [
-    "gold", "xau", "gold price", "gold futures", "gold etf",
-    "gold mining", "bullion", "gold bars", "gold coins",
-    "gold reserves", "gold buying", "gold selling",
-    "gold demand", "gold supply", "gold import", "gold export",
-    "gold rate", "gold market", "gold rally", "gold plunge",
-    "gold surges", "gold falls", "gold rises", "gold drops",
-    "gold hits", "gold breaches", "gold ounce", "troy ounce",
-    "comex gold", "lbma", "spot gold", "paper gold",
-    "digital gold", "sovereign gold bond", "sgb",
-    "spdr gold", "gld etf",
-    "mcx gold", "gold mcx",
-]
+# ── Gold Keyword Concepts (used for relevance scoring) ───────────────
+# Grouped into CONCEPT buckets. Each bucket counts at most ONE hit per
+# article, so overlapping phrases ("gold", "gold price", "gold rally")
+# can't stack into a score driven by the author repeating the same idea.
+# A title that hits multiple DISTINCT buckets is genuinely multi-faceted.
+GOLD_KEYWORD_CONCEPTS: dict[str, list[str]] = {
+    "gold_general": [
+        "gold", "xau", "bullion", "troy ounce", "spot gold",
+        "comex gold", "lbma", "paper gold", "gold futures",
+    ],
+    "gold_price_action": [
+        "gold price", "gold rally", "gold surges", "gold falls",
+        "gold rises", "gold drops", "gold hits", "gold breaches",
+        "gold plunge", "gold climbs", "gold gains", "gold extends",
+        "gold slides", "gold tumbles", "gold jumps",
+    ],
+    "gold_flows": [
+        "gold etf", "spdr gold", "gld etf", "gold buying",
+        "gold selling", "gold demand", "gold supply", "gold import",
+        "gold export", "gold reserves", "central bank gold",
+    ],
+    "gold_india_market": [
+        "mcx gold", "gold mcx", "gold rate", "gold rate india",
+        "gold import duty", "sgb", "sovereign gold bond",
+        "digital gold", "gold coins", "gold bars",
+    ],
+    "gold_mining": [
+        "gold mining", "gold mine", "gold miner",
+    ],
+}
 
 GOLD_KEYWORDS_SECONDARY: list[str] = [
     "safe haven", "inflation hedge", "central bank",
