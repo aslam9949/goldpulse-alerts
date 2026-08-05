@@ -18,9 +18,15 @@ from datetime import datetime, timezone
 from ingestion.rss_fetcher import RSSFetcher, Article
 from ingestion.gdelt_fetcher import GDELTFetcher
 from ingestion.price_fetcher import PriceFetcher
-from processing.relevance import score_article, should_alert, extract_gold_angle
+from processing.relevance import (
+    score_article,
+    should_alert,
+    extract_gold_angle,
+    _concept_hits,
+)
 from processing.dedup import Deduplicator
 from processing.language_filter import is_english_candidate
+from config.settings import ALERT_COOLDOWN_MINUTES
 from storage.database import Database
 from bot.formatter import format_news_alert, is_article_too_old
 from utils.logger import get_logger
@@ -29,6 +35,24 @@ logger = get_logger("alerts.news")
 
 # Maximum article age in hours for alerts (3 days)
 MAX_ARTICLE_AGE_HOURS = 72
+
+
+def _topic_key(article: Article) -> str:
+    """
+    Coarse topic cluster used for alert cooldown.
+
+    Articles about the same angle/story (e.g. "📈 Gold bullish") share a
+    key, so repeat alerts on the same topic are suppressed within
+    ALERT_COOLDOWN_MINUTES. Falls back to the dominant gold concept bucket
+    when no angle is detected.
+    """
+    angle = extract_gold_angle(article.title, article.summary)
+    if angle:
+        return f"news:{angle}"
+    concepts = _concept_hits((article.title or "").lower())
+    if concepts:
+        return f"news:{min(concepts)}"
+    return "news:other"
 
 
 class NewsAlertEngine:
@@ -66,6 +90,7 @@ class NewsAlertEngine:
             "alerted": 0,
             "filtered": 0,
             "skipped_old": 0,
+            "cooldown_skipped": 0,
         }
 
         try:
@@ -157,22 +182,25 @@ class NewsAlertEngine:
 
                     # 4. Alert if high relevance
                     if should_alert(score):
-                        sent = await self._send_article_alert(
+                        result = await self._send_article_alert(
                             article, score, gold_price
                         )
-                        if sent:
+                        if result == "sent":
                             stats["alerted"] += 1
                             # Mark as alerted using the returned article ID
                             self.db.mark_article_alerted(stored)
+                        elif result == "cooldown":
+                            stats["cooldown_skipped"] += 1
 
             logger.info(
-                "News cycle complete: fetched=%d, deduped=%d, stored=%d, alerted=%d, filtered=%d, skipped_old=%d",
+                "News cycle complete: fetched=%d, deduped=%d, stored=%d, alerted=%d, filtered=%d, skipped_old=%d, cooldown_skipped=%d",
                 stats["fetched"],
                 stats["deduped"],
                 stats["stored"],
                 stats["alerted"],
                 stats["filtered"],
                 stats["skipped_old"],
+                stats["cooldown_skipped"],
             )
 
         except Exception as e:
@@ -195,9 +223,27 @@ class NewsAlertEngine:
             gold_price: Current GoldPrice object
 
         Returns:
-            True if alert was sent successfully.
+            "sent" if the alert was sent, "cooldown" if suppressed by the
+            topic cooldown, or "failed" if the send attempt failed.
         """
         try:
+            # ── Cooldown: at most one alert per topic cluster per
+            # ALERT_COOLDOWN_MINUTES — the same story/angle can't spam.
+            topic = _topic_key(article)
+            last_sent = self.db.get_last_alert_at(topic)
+            if last_sent is not None:
+                elapsed_min = (
+                    datetime.now(timezone.utc) - last_sent
+                ).total_seconds() / 60
+                if elapsed_min < ALERT_COOLDOWN_MINUTES:
+                    logger.info(
+                        "Skipped alert for '%s' (topic '%s' on cooldown, last sent %.0f min ago)",
+                        article.title[:60],
+                        topic,
+                        elapsed_min,
+                    )
+                    return "cooldown"
+
             # Extract gold angle for context
             gold_angle = extract_gold_angle(article.title, article.summary)
 
@@ -217,6 +263,7 @@ class NewsAlertEngine:
             )
 
             if sent:
+                self.db.mark_alert_sent(topic)
                 logger.info(
                     "Alert sent (score=%.1f): %s",
                     score,
@@ -225,11 +272,11 @@ class NewsAlertEngine:
             else:
                 logger.warning("Failed to send alert: %s", article.title[:80])
 
-            return sent > 0
+            return "sent" if sent else "failed"
 
         except Exception as e:
             logger.error("Alert send error: %s", e, exc_info=True)
-            return False
+            return "failed"
 
     async def close(self) -> None:
         """Clean up resources."""

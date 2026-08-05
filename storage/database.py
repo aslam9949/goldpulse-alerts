@@ -88,6 +88,13 @@ _CREATE_TABLES_SQL = """
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- Alert cooldowns: last-alert-time per topic cluster, so the same
+    -- story/event can't spam the chat within ALERT_COOLDOWN_MINUTES.
+    CREATE TABLE IF NOT EXISTS alert_cooldowns (
+        topic TEXT PRIMARY KEY,
+        last_alert_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     -- Indexes for common queries
     CREATE INDEX IF NOT EXISTS idx_articles_sent
         ON articles(sent_as_alert, relevance_score);
@@ -103,9 +110,17 @@ _CREATE_TABLES_SQL = """
         ON seen_titles(seen_at);
 """
 
-# Allowlist of table names that cleanup_old_data is permitted to operate on.
-# Prevents SQL injection via f-string interpolation of table names.
-_ALLOWED_CLEANUP_TABLES = frozenset({"articles", "seen_urls", "seen_titles"})
+# Allowlist of tables cleanup_old_data may operate on, mapped to each
+# table's real datetime column. The seen_* tables use `seen_at` (not
+# `created_at`); using the right column per table is what makes cleanup
+# actually run instead of throwing "no such column: created_at" and
+# rolling back the whole sweep every night.
+_CLEANUP_TABLE_COLUMNS: dict[str, str] = {
+    "articles": "created_at",
+    "seen_urls": "seen_at",
+    "seen_titles": "seen_at",
+    "alert_cooldowns": "last_alert_at",
+}
 
 
 class Database:
@@ -543,6 +558,48 @@ class Database:
                 "urls_seen": -1,
             }
 
+    # -- Alert Cooldown Operations ----------------------------------------
+    # Topic-cluster cooldown: at most one alert per topic per
+    # ALERT_COOLDOWN_MINUTES, so the same story/event can't spam the chat.
+
+    def get_last_alert_at(self, topic: str) -> datetime | None:
+        """
+        Timestamp of the last alert sent for a topic cluster.
+
+        Returns:
+            Aware datetime, or None if no alert has been sent for this topic.
+        """
+        try:
+            row = self.conn.execute(
+                "SELECT last_alert_at FROM alert_cooldowns WHERE topic = ?",
+                (topic,),
+            ).fetchone()
+            if not row:
+                return None
+            value = row["last_alert_at"]
+            parsed = datetime.fromisoformat(value)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except (sqlite3.Error, ValueError):
+            logger.exception("Failed to read cooldown for topic '%s'", topic)
+            return None
+
+    def mark_alert_sent(self, topic: str) -> None:
+        """Record that an alert was just sent for a topic cluster (now)."""
+        try:
+            self.conn.execute(
+                """INSERT INTO alert_cooldowns (topic, last_alert_at)
+                   VALUES (?, ?)
+                   ON CONFLICT(topic)
+                   DO UPDATE SET last_alert_at = excluded.last_alert_at""",
+                (topic, datetime.now(timezone.utc).isoformat()),
+            )
+            self.conn.commit()
+        except sqlite3.Error:
+            logger.exception("Failed to record alert sent for topic '%s'", topic)
+            self.conn.rollback()
+
     # -- Cleanup ----------------------------------------------------------
 
     def cleanup_old_data(self, days: int = 30) -> int:
@@ -551,11 +608,11 @@ class Database:
         total = 0
 
         try:
-            for table in _ALLOWED_CLEANUP_TABLES:
-                # Table name is validated against the allowlist, so f-string
-                # interpolation is safe here -- no user input reaches the SQL.
+            for table, col in _CLEANUP_TABLE_COLUMNS.items():
+                # Table and column names come only from the allowlist dict,
+                # so f-string interpolation is safe here -- no user input.
                 cursor = self.conn.execute(
-                    f"DELETE FROM {table} WHERE datetime(created_at) < datetime(?, '-' || ? || ' days')",
+                    f"DELETE FROM {table} WHERE datetime({col}) < datetime(?, '-' || ? || ' days')",
                     (cutoff, days),
                 )
                 total += cursor.rowcount
