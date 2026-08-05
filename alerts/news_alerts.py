@@ -20,6 +20,7 @@ from ingestion.gdelt_fetcher import GDELTFetcher
 from ingestion.price_fetcher import PriceFetcher
 from processing.relevance import score_article, should_alert, extract_gold_angle
 from processing.dedup import Deduplicator
+from processing.language_filter import is_english_candidate
 from storage.database import Database
 from bot.formatter import format_news_alert, is_article_too_old
 from utils.logger import get_logger
@@ -58,28 +59,46 @@ class NewsAlertEngine:
         Returns:
             Stats dict with counts: fetched, deduplicated, stored, alerted.
         """
-        stats = {"fetched": 0, "deduped": 0, "stored": 0, "alerted": 0, "skipped_old": 0}
+        stats = {
+            "fetched": 0,
+            "deduped": 0,
+            "stored": 0,
+            "alerted": 0,
+            "filtered": 0,
+            "skipped_old": 0,
+        }
 
         try:
             # 1. Fetch from all sources concurrently
             logger.info("Starting news fetch cycle...")
+            # Two independent ingestion tracks:
+            #  - gold-track: feeds/GDELT queries that require "gold"
+            #  - geopolitical-track: world-news feeds + GDELT queries that do
+            #    NOT require "gold" (wars, sanctions, central bank moves).
+            #    Articles are tagged source_category="geopolitical".
             rss_task = self.rss_fetcher.fetch_all_feeds()
+            geo_rss_task = self.rss_fetcher.fetch_geopolitical_feeds()
             gdelt_task = self.gdelt_fetcher.fetch_gold_events()
-            rss_articles, gdelt_articles = await asyncio.gather(
-                rss_task, gdelt_task, return_exceptions=True
+            geo_gdelt_task = self.gdelt_fetcher.fetch_geopolitical_events()
+            rss_articles, geo_rss_articles, gdelt_articles, geo_gdelt_articles = (
+                await asyncio.gather(
+                    rss_task, geo_rss_task, gdelt_task, geo_gdelt_task,
+                    return_exceptions=True,
+                )
             )
 
             # Combine results, handling errors
             all_articles: list[Article] = []
-            if isinstance(rss_articles, list):
-                all_articles.extend(rss_articles)
-            else:
-                logger.error("RSS fetch failed: %s", rss_articles)
-
-            if isinstance(gdelt_articles, list):
-                all_articles.extend(gdelt_articles)
-            else:
-                logger.error("GDELT fetch failed: %s", gdelt_articles)
+            for name, result in (
+                ("RSS", rss_articles),
+                ("Geopolitical RSS", geo_rss_articles),
+                ("GDELT", gdelt_articles),
+                ("Geopolitical GDELT", geo_gdelt_articles),
+            ):
+                if isinstance(result, list):
+                    all_articles.extend(result)
+                else:
+                    logger.error("%s fetch failed: %s", name, result)
 
             stats["fetched"] = len(all_articles)
             logger.info("Fetched %d total articles", len(all_articles))
@@ -93,6 +112,14 @@ class NewsAlertEngine:
 
             # 3. Process each article
             for article in all_articles:
+                # Drop non-English articles EARLY — single choke point for both
+                # RSS and GDELT, before dedup so foreign titles never churn
+                # through the fuzzy matcher or pollute the seen-title store.
+                if not is_english_candidate(article.title):
+                    stats["filtered"] += 1
+                    logger.info("Skipped non-English article: %s", article.title[:80])
+                    continue
+
                 # Skip very old articles
                 if is_article_too_old(article.published_at, MAX_ARTICLE_AGE_HOURS):
                     stats["skipped_old"] += 1
@@ -139,11 +166,12 @@ class NewsAlertEngine:
                             self.db.mark_article_alerted(stored)
 
             logger.info(
-                "News cycle complete: fetched=%d, deduped=%d, stored=%d, alerted=%d, skipped_old=%d",
+                "News cycle complete: fetched=%d, deduped=%d, stored=%d, alerted=%d, filtered=%d, skipped_old=%d",
                 stats["fetched"],
                 stats["deduped"],
                 stats["stored"],
                 stats["alerted"],
+                stats["filtered"],
                 stats["skipped_old"],
             )
 

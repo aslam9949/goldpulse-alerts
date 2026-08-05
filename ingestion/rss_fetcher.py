@@ -22,7 +22,7 @@ import time
 import aiohttp
 import feedparser
 
-from config.settings import RSS_FEEDS
+from config.settings import RSS_FEEDS, GEOPOLITICAL_RSS_FEEDS
 from utils.logger import get_logger
 
 logger = get_logger("ingestion.rss")
@@ -82,20 +82,40 @@ class RSSFetcher:
 
     async def fetch_all_feeds(self) -> list[Article]:
         """
-        Fetch all configured RSS feeds concurrently.
+        Fetch all configured gold RSS feeds concurrently.
 
         Returns:
             List of Article objects from all feeds, sorted by published_at.
         """
+        return await self._fetch_feed_list(RSS_FEEDS, tags=[])
+
+    async def fetch_geopolitical_feeds(self) -> list[Article]:
+        """
+        Fetch the geopolitical/world-news feeds (source_category=geopolitical).
+
+        These feeds do NOT require "gold" in the query — they surface shocks
+        (wars, sanctions, central bank moves) that move gold as a safe haven.
+        Articles are tagged so the relevance scorer routes them through the
+        impact-based rubric instead of the title-keyword gate.
+
+        Returns:
+            List of Article objects, tagged source_category=geopolitical.
+        """
+        return await self._fetch_feed_list(GEOPOLITICAL_RSS_FEEDS, tags=["geopolitical"])
+
+    async def _fetch_feed_list(
+        self, feeds: list[tuple[str, str, int]], tags: list[str]
+    ) -> list[Article]:
+        """Fetch a list of (name, url, trust) feeds concurrently, tagging results."""
         tasks = [
-            self._fetch_single_feed(name, url, trust)
-            for name, url, trust in RSS_FEEDS
+            self._fetch_single_feed(name, url, trust, tags)
+            for name, url, trust in feeds
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         all_articles: list[Article] = []
         for i, result in enumerate(results):
-            feed_name = RSS_FEEDS[i][0]
+            feed_name = feeds[i][0]
             if isinstance(result, Exception):
                 logger.error("Feed '%s' failed: %s", feed_name, result)
             elif result:
@@ -114,7 +134,7 @@ class RSSFetcher:
         return all_articles
 
     async def _fetch_single_feed(
-        self, name: str, url: str, trust_score: int
+        self, name: str, url: str, trust_score: int, tags: list[str] | None = None
     ) -> list[Article]:
         """
         Fetch and parse a single RSS feed.
@@ -123,6 +143,7 @@ class RSSFetcher:
             name: Human-readable feed name
             url: RSS feed URL
             trust_score: Trust level for this source (1-10)
+            tags: Tags to attach to each article (e.g. source_category)
 
         Returns:
             List of parsed Article objects
@@ -143,7 +164,7 @@ class RSSFetcher:
 
             articles = []
             for entry in feed.entries:
-                article = self._parse_entry(entry, name, trust_score)
+                article = self._parse_entry(entry, name, trust_score, tags)
                 if article:
                     articles.append(article)
 
@@ -157,7 +178,7 @@ class RSSFetcher:
             return []
 
     def _parse_entry(
-        self, entry: dict, source: str, trust_score: int
+        self, entry: dict, source: str, trust_score: int, tags: list[str] | None = None
     ) -> Article | None:
         """
         Parse a single RSS entry into an Article.
@@ -200,6 +221,7 @@ class RSSFetcher:
             source=source,
             trust_score=trust_score,
             published_at=published_at,
+            tags=tags or [],
         )
 
     def _parse_date(self, entry: dict) -> datetime | None:

@@ -128,6 +128,31 @@ RSS_FEEDS: list[tuple[str, str, int]] = [
     ),
 ]
 
+# ── Geopolitical / World News Feeds ─────────────────────────────────
+# General world-news feeds that cover shocks (wars, sanctions, central
+# bank moves, rate decisions) WITHOUT requiring "gold" in the query.
+# Articles land with source_category="geopolitical" and are scored with a
+# different rubric (see processing/relevance.py) — a headline like
+# "Israel strikes Iranian nuclear sites" moves gold as a safe haven even
+# though it never mentions the metal.
+GEOPOLITICAL_RSS_FEEDS: list[tuple[str, str, int]] = [
+    (
+        "Reuters World",
+        "https://news.google.com/rss/search?q=site:reuters.com+world&hl=en-IN&gl=IN&ceid=IN:en",
+        9,
+    ),
+    (
+        "AP World News",
+        "https://news.google.com/rss/search?q=site:apnews.com+world&hl=en-IN&gl=IN&ceid=IN:en",
+        8,
+    ),
+    (
+        "Google News (Geopolitics)",
+        "https://news.google.com/rss/search?q=war+OR+sanctions+OR+invasion+OR+ceasefire&hl=en-IN&gl=IN&ceid=IN:en",
+        6,
+    ),
+]
+
 # ── GDELT Settings ───────────────────────────────────────────────────
 GDELT_BASE_URL: str = "https://api.gdeltproject.org/api/v2/doc/doc"
 # GDELT queries for gold-relevant geopolitical events
@@ -137,6 +162,22 @@ GDELT_QUERIES: list[str] = [
     "central bank gold",
     "gold reserves",
     "safe haven gold",
+]
+
+# GDELT queries for geopolitical/macro shocks that move gold WITHOUT the
+# word "gold" in the query. These get their own ingestion track and are
+# tagged source_category="geopolitical" so the scorer can route them
+# through the impact-based rubric instead of the title-keyword gate.
+GDELT_GEOPOLITICAL_QUERIES: list[str] = [
+    "war",
+    "military conflict",
+    "sanctions",
+    "central bank policy",
+    "interest rate decision",
+    "nuclear",
+    "invasion",
+    "ceasefire",
+    "oil embargo",
 ]
 
 # ── Cooldown ─────────────────────────────────────────────────────────
