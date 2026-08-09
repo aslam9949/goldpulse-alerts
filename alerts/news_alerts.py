@@ -143,7 +143,7 @@ class NewsAlertEngine:
                 # through the fuzzy matcher or pollute the seen-title store.
                 if not is_english_candidate(article.title):
                     stats["filtered"] += 1
-                    logger.info("Skipped non-English article: %s", article.title[:80])
+                    logger.debug("Skipped non-English article: %s", article.title[:80])
                     continue
 
                 # Skip very old articles
